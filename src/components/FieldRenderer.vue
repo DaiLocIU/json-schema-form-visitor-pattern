@@ -9,6 +9,7 @@ import {
   ElSelect,
   ElOption,
   ElDatePicker,
+  ElTimePicker,
   ElCard,
   ElButton,
   ElText,
@@ -30,6 +31,20 @@ if (!jsf) throw new Error('FieldRenderer requires jsf injection')
 const schResolved = computed(() => jsf.resolveSchema(props.schema))
 const tmpKey = ref('')
 
+// Resolved schema for additionalProperties (if object schema provided)
+const apResolvedSchema = computed(() => {
+  const ap = schResolved.value.additionalProperties
+  return ap && typeof ap === 'object' ? jsf.resolveSchema(ap) : undefined
+})
+
+// Dynamic (additional) property keys present in current model but not declared in properties
+const dynamicKeys = computed(() => {
+  const mv = props.modelValue ?? {}
+  if (Array.isArray(mv) || mv == null || typeof mv !== 'object') return []
+  const fixed = Object.keys(schResolved.value.properties || {})
+  return Object.keys(mv).filter(k => !fixed.includes(k))
+})
+
 function setChild(key: string | number, childVal: any) {
   const cur = (props.modelValue == null) ? (schResolved.value.type === 'array' ? [] : {}) : { ...props.modelValue }
   cur[key as any] = childVal
@@ -44,6 +59,26 @@ function addItem(initVal: any) {
   const arr = Array.isArray(props.modelValue) ? [...props.modelValue] : []
   arr.push(initVal)
   emit('update:modelValue', arr)
+}
+
+function addDynamic() {
+  if (!schResolved.value.additionalProperties) return
+  const key = tmpKey.value.trim()
+  if (!key) return
+  let init: any = ''
+  if (apResolvedSchema.value) {
+    init = jsf.initBySchema(apResolvedSchema.value)
+  }
+  setChild(key, init)
+  tmpKey.value = ''
+}
+
+function removeDynamic(key: string) {
+  const cur = (props.modelValue && typeof props.modelValue === 'object' && !Array.isArray(props.modelValue)) ? { ...props.modelValue } : {}
+  if (key in cur) {
+    delete cur[key]
+    emit('update:modelValue', cur)
+  }
 }
 </script>
 
@@ -77,9 +112,16 @@ function addItem(initVal: any) {
         <ElOption v-for="(o,i) in schResolved.enum" :key="i" :label="String(o)" :value="o" />
       </ElSelect>
 
+      <ElTimePicker
+        v-else-if="schResolved.format === 'time'"
+        :model-value="modelValue"
+        class="inp"
+        @change="$emit('update:modelValue', $event)"
+      />
+
       <ElDatePicker
-        v-else-if="['date','time','date-time'].includes(schResolved.format)"
-        :type="schResolved.format === 'date' ? 'date' : (schResolved.format === 'time' ? 'time' : 'datetime')"
+        v-else-if="['date','date-time'].includes(schResolved.format)"
+        :type="schResolved.format === 'date' ? 'date' : 'datetime'"
         :model-value="modelValue"
         class="inp"
         @change="$emit('update:modelValue', $event)"
@@ -131,11 +173,12 @@ function addItem(initVal: any) {
 
   <!-- object -->
   <div v-else-if="schResolved.type === 'object' || schResolved.properties" class="group">
-    <ElCard v-if="schResolved.title" shadow="never" class="card-prop">
-      <template #header>
+    <ElCard shadow="never" class="card-prop">
+      <template #header v-if="schResolved.title">
         <div class="group-title">{{ schResolved.title }}</div>
       </template>
       <template #default>
+        <!-- Declared properties -->
         <div v-for="(childSchema, key) in schResolved.properties || {}" :key="key">
           <FieldRenderer
             :schema="childSchema"
@@ -145,10 +188,36 @@ function addItem(initVal: any) {
           />
         </div>
 
+        <!-- Add dynamic property -->
         <div v-if="schResolved.additionalProperties" class="ap-row">
-          <ElInput v-model="tmpKey" placeholder="key" class="inp" />
-          <ElButton type="primary" @click="() => { if (!tmpKey) return; const ap = schResolved.additionalProperties; const initVal = ap?.type ? jsf.initBySchema(ap) : ''; setChild(tmpKey, initVal); tmpKey = ''; }">Add</ElButton>
+          <ElFormItem label="Add property key" class="ap-formitem">
+            <ElInput v-model="tmpKey" placeholder="key" clearable class="inp" />
+          </ElFormItem>
+          <ElButton type="primary" @click="addDynamic">Add</ElButton>
         </div>
+
+        <!-- Render dynamic (additional) properties -->
+        <ElCard
+          v-for="dk in dynamicKeys"
+          :key="dk"
+          class="card-prop dyn-prop"
+          shadow="never"
+        >
+          <template #header>
+            <div class="prop-head">
+              <ElText type="primary">{{ dk }}</ElText>
+              <ElButton link type="danger" @click="removeDynamic(dk)">Remove</ElButton>
+            </div>
+          </template>
+          <template #default>
+            <FieldRenderer
+              :schema="apResolvedSchema || {}"
+              :path="[...path, dk]"
+              :model-value="(modelValue ?? {})[dk]"
+              @update:model-value="v => setChild(dk, v)"
+            />
+          </template>
+        </ElCard>
       </template>
     </ElCard>
   </div>

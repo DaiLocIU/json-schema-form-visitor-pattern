@@ -49,7 +49,7 @@ function getOptionLabel(o: any, i: number) {
             class="inp"
             @change="(v:any)=>{ idx = v; if (v !== undefined) emit('update:modelValue', jsf.initBySchema((sch.oneOf || sch.anyOf)[v])) }"
           >
-            <ElOption :label="'— select —'" :value="undefined" />
+
             <ElOption
               v-for="(o,i) in (sch.oneOf || sch.anyOf || [])"
               :key="i"
