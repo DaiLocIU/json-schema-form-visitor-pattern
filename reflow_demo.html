@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Demo: Forced Reflow in the Browser</title>
+  <style>
+    #box {
+      width: 50px;
+      height: 50px;
+      background: #cc0000;
+      margin-bottom: 1rem;
+    }
+    button {
+      margin-right: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <h2>Test forced reflow</h2>
+  <p>Click the buttons below to compare performance.</p>
+  <div id="box"></div>
+  <button id="thrash">Layout thrashing</button>
+  <button id="batched">Batched writes</button>
+  <pre id="output"></pre>
+  <script>
+    const box = document.getElementById('box');
+    const output = document.getElementById('output');
+
+    // A helper to reset the box size before each test
+    function resetBox() {
+      box.style.width = '50px';
+      box.style.height = '50px';
+    }
+
+    document.getElementById('thrash').addEventListener('click', () => {
+      resetBox();
+      output.textContent = '';
+      const start = performance.now();
+      for (let i = 0; i < 1000; i++) {
+        // Write: change width/height
+        box.style.width = `${50 + i % 10}px`;
+        box.style.height = `${50 + i % 10}px`;
+        // Read: reading offsetWidth forces layout
+        const w = box.offsetWidth;
+        const h = box.offsetHeight;
+        // Note: we don't do anything with w/h; just reading them triggers reflow
+      }
+      const end = performance.now();
+      output.textContent += `Layout thrashing took ${(end - start).toFixed(2)} ms\n`;
+    });
+
+    document.getElementById('batched').addEventListener('click', () => {
+      resetBox();
+      output.textContent = '';
+      const start = performance.now();
+      // Read once
+      const initialWidth = box.offsetWidth;
+      const initialHeight = box.offsetHeight;
+      // Batch writes: update style separately after reading
+      for (let i = 0; i < 1000; i++) {
+        box.style.width = `${50 + i % 10}px`;
+        box.style.height = `${50 + i % 10}px`;
+      }
+      const end = performance.now();
+      output.textContent += `Batched writes took ${(end - start).toFixed(2)} ms\n`;
+    });
+  </script>
+</body>
+</html>
