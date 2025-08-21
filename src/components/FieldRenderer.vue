@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, ref, defineOptions } from 'vue'
+import { computed, inject, ref, defineOptions, watch } from 'vue'
 import CompositeRenderer from './CompositeRenderer.vue'
 import {
   ElFormItem,
@@ -53,7 +53,204 @@ const editKeyValue = ref('')
 const expandedRows = ref<string[]>([])
 
 // Get the form validation function from jsf
-const validateAllForm = computed(() => jsf.validateForm)
+const validateAllForm = computed(() => {
+  return async () => {
+    console.log('Validate All clicked - starting validation...')
+    try {
+      // First trigger the main form validation
+      await jsf.validateForm()
+      console.log('Main form validation completed')
+      
+      // Then check our additional properties validation
+      await checkValidation()
+      console.log('Additional properties validation completed')
+      
+      // Force reactivity update
+      validationState.value = { ...validationState.value }
+      
+    } catch (error) {
+      console.log('Validation completed with errors (expected):', error)
+      // Still check additional properties even if main validation fails
+      await checkValidation()
+      validationState.value = { ...validationState.value }
+    }
+  }
+})
+
+// Get form ref to access validation state
+const formRef = computed(() => jsf.formRef)
+
+// Reactive validation state that updates when form validation runs
+const validationState = ref<Record<string, { hasError: boolean, errors: string[] }>>({})
+
+// Pure schema-based required check for additionalProperties (so we can show errors even when not expanded)
+function computeSchemaRequiredErrors() {
+  const result: Record<string, string[]> = {}
+  if (!apResolvedSchema.value) return result
+  const ap = apResolvedSchema.value
+  const req: string[] = Array.isArray(ap.required) ? ap.required : []
+  if (req.length === 0) return result
+  const mv = (props.modelValue && typeof props.modelValue === 'object') ? props.modelValue : {}
+  for (const key of Object.keys(mv)) {
+    // skip declared (non-additional) keys
+    if (schResolved.value.properties && key in schResolved.value.properties) continue
+    const val = (mv as any)[key]
+    // Only inspect object-like values for required inner properties
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const missing = req.filter(r => val[r] === undefined || val[r] === '')
+      if (missing.length) {
+        result[key] = missing.map(m => `${m}: required`)
+      }
+    } else {
+      // If schema expects object but current value not object -> mark all required
+      if (ap.type === 'object') {
+        result[key] = req.map(r => `${r}: required`)
+      }
+    }
+  }
+  return result
+}
+
+// Trigger validation check for additional properties
+async function checkValidation() {
+  if (!formRef.value) {
+    console.log('No form ref available')
+    return
+  }
+  
+  try {
+    const form = formRef.value
+    console.log('Starting validation check...')
+    console.log('Available form fields:', form.fields?.map((f: any) => f.prop))
+    console.log('Dynamic keys:', dynamicKeys.value)
+    console.log('Props path:', props.path)
+    
+    // Trigger validation for all fields (including hidden ones)
+    const validationPromises: Promise<any>[] = []
+    
+    // Validate each additional property and its nested fields
+    for (const key of dynamicKeys.value) {
+      // Validate the main field
+      const mainFieldPath = [...props.path, key].join('.')
+      const mainField = form.fields?.find((f: any) => f.prop === mainFieldPath)
+      if (mainField) {
+        console.log(`Found main field for ${mainFieldPath}`)
+        validationPromises.push(mainField.validate('').catch(() => {}))
+      }
+      
+      // Validate nested fields for complex objects
+      if (apResolvedSchema.value) {
+        const resolvedAp = jsf.resolveSchema(apResolvedSchema.value)
+        if (resolvedAp.properties) {
+          Object.keys(resolvedAp.properties).forEach(nestedKey => {
+            const nestedPath = [...props.path, key, nestedKey].join('.')
+            const nestedField = form.fields?.find((f: any) => f.prop === nestedPath)
+            if (nestedField) {
+              console.log(`Found nested field for ${nestedPath}`)
+              validationPromises.push(nestedField.validate('').catch(() => {}))
+            } else {
+              console.log(`Missing nested field for ${nestedPath}`)
+            }
+          })
+        }
+      }
+    }
+    
+    // Wait for all validations to complete
+    await Promise.all(validationPromises)
+    console.log('All validations completed')
+    
+    // Update validation state for additional properties
+    const newState: Record<string, { hasError: boolean, errors: string[] }> = {}
+    
+    dynamicKeys.value.forEach(key => {
+      const fieldPath = [...props.path, key].join('.')
+      const errors: string[] = []
+      let hasError = false
+      
+      // Check direct field validation
+      const field = form.fields?.find((f: any) => f.prop === fieldPath)
+      if (field && field.validateState === 'error') {
+        hasError = true
+        errors.push(field.validateMessage || 'Validation failed')
+        console.log(`Direct field error for ${fieldPath}:`, field.validateMessage)
+      }
+      
+      // Check nested fields for complex objects
+      if (apResolvedSchema.value) {
+        const resolvedAp = jsf.resolveSchema(apResolvedSchema.value)
+        if (resolvedAp.properties) {
+          Object.keys(resolvedAp.properties).forEach(nestedKey => {
+            const nestedPath = [...props.path, key, nestedKey].join('.')
+            const nestedField = form.fields?.find((f: any) => f.prop === nestedPath)
+            if (nestedField && nestedField.validateState === 'error') {
+              hasError = true
+              errors.push(`${nestedKey}: ${nestedField.validateMessage || 'Validation failed'}`)
+              console.log(`Nested field error for ${nestedPath}:`, nestedField.validateMessage)
+            }
+          })
+        }
+      }
+      
+      newState[key] = { hasError, errors }
+    })
+    
+    validationState.value = newState
+    
+    // Debug logging
+    console.log('Validation check completed for additional properties:', newState)
+    console.log('Form fields with states:', form.fields?.map((f: any) => ({ prop: f.prop, state: f.validateState, message: f.validateMessage })))
+    
+  } catch (error) {
+    console.warn('Error checking validation:', error)
+  }
+}
+
+// Get validation errors for a specific field path
+function getFieldErrors(fieldPath: string) {
+  if (!formRef.value) return []
+  
+  try {
+    const form = formRef.value
+    const fields = form.fields || []
+    const field = fields.find((f: any) => f.prop === fieldPath)
+    
+    if (field && field.validateState === 'error') {
+      return [field.validateMessage || 'Validation failed']
+    }
+    
+    return []
+  } catch (error) {
+    console.warn('Error getting field validation:', error)
+    return []
+  }
+}
+
+// Get validation status for additional properties
+const additionalPropsValidation = computed(() => {
+  const validation: Record<string, { hasError: boolean, errors: string[] }> = {}
+
+  // Start with schema-based required errors (works even when not expanded)
+  const schemaErrors = computeSchemaRequiredErrors()
+
+  for (const key of dynamicKeys.value) {
+    validation[key] = { hasError: false, errors: [] }
+  }
+  for (const [k, errs] of Object.entries(schemaErrors)) {
+    validation[k] = { hasError: true, errors: errs }
+  }
+
+  // Merge runtime ElForm validation (when fields are rendered / expanded)
+  for (const [k, v] of Object.entries(validationState.value)) {
+    if (!validation[k]) validation[k] = { hasError: false, errors: [] }
+    if (v.hasError) {
+      validation[k].hasError = true
+      validation[k].errors.push(...v.errors)
+    }
+  }
+
+  return validation
+})
 
 // Auto-collapse when there are more than 3 dynamic properties
 const shouldAutoCollapse = computed(() => dynamicKeys.value.length > 3)
@@ -98,6 +295,17 @@ const dynamicKeys = computed(() => {
   const fixed = Object.keys(schResolved.value.properties || {})
   return Object.keys(mv).filter(k => !fixed.includes(k))
 })
+
+// Watch for changes and check validation
+watch([dynamicKeys, () => props.modelValue], () => {
+  // Clear validation state first to force reactivity
+  validationState.value = {}
+  
+  // Debounce validation checking
+  setTimeout(() => {
+    checkValidation()
+  }, 300)
+}, { deep: true, immediate: true })
 
 // Declared properties grouped for better layout
 const declaredPropsGroups = computed(() => {
@@ -175,6 +383,11 @@ function addDynamic() {
   if (shouldAutoCollapse.value && dynamicCollapsed.value.length === 0) {
     dynamicCollapsed.value = ['dynamic-props']
   }
+  
+  // Trigger validation after adding
+  setTimeout(() => {
+    checkValidation()
+  }, 200)
 }
 
 function handleKeyPress(event: KeyboardEvent) {
@@ -387,8 +600,7 @@ function toggleRowExpansion(key: string) {
           <ElDivider content-position="left">
             <span class="section-title">Additional Properties</span>
             <ElBadge v-if="dynamicKeys.length" :value="dynamicKeys.length" class="badge-count" />
-          </ElDivider>
-          
+          </ElDivider>        
           <div class="ap-controls">
             <ElInput 
               v-model="tmpKey" 
@@ -441,6 +653,7 @@ function toggleRowExpansion(key: string) {
               class="dyn-table"
               row-key="key"
               empty-text="No additional properties added yet"
+              :row-class-name="(params: any) => additionalPropsValidation[params.row.key]?.hasError ? 'has-error' : ''"
             >
             <ElTableColumn label="Key" min-width="120">
               <template #default="{ row }">
@@ -457,6 +670,16 @@ function toggleRowExpansion(key: string) {
                   <span>{{ row.key }}</span>
                   <ElTooltip content="Double-click to edit">
                     <ElIcon class="edit-hint"><Edit /></ElIcon>
+                  </ElTooltip>
+                  <!-- Validation error indicator -->
+                  <ElTooltip 
+                    v-if="additionalPropsValidation[row.key]?.hasError"
+                    :content="additionalPropsValidation[row.key].errors.join('; ')"
+                    placement="top"
+                  >
+                    <ElBadge :value="additionalPropsValidation[row.key].errors.length" type="danger" class="error-badge">
+                      <ElIcon color="#f56c6c"><WarningFilled /></ElIcon>
+                    </ElBadge>
                   </ElTooltip>
                 </div>
               </template>
@@ -502,6 +725,26 @@ function toggleRowExpansion(key: string) {
                   >
                     {{ expandedRows.includes(row.key) ? 'Collapse' : 'Expand' }}
                   </ElButton>
+                  <!-- Show validation errors for complex objects -->
+                  <div v-if="additionalPropsValidation[row.key]?.hasError" class="inline-errors">
+                    <ElAlert 
+                      v-for="(error, idx) in additionalPropsValidation[row.key].errors.slice(0, 2)" 
+                      :key="idx"
+                      :title="error" 
+                      type="error" 
+                      size="small" 
+                      :closable="false"
+                      show-icon
+                      style="margin-top: 4px;"
+                    />
+                    <ElText 
+                      v-if="additionalPropsValidation[row.key].errors.length > 2"
+                      size="small" 
+                      type="info"
+                    >
+                      ... and {{ additionalPropsValidation[row.key].errors.length - 2 }} more errors
+                    </ElText>
+                  </div>
                 </div>
               </template>
             </ElTableColumn>
@@ -535,11 +778,26 @@ function toggleRowExpansion(key: string) {
             <div class="expanded-content">
               <FieldRenderer
                 :schema="apResolvedSchema || {}"
-                :path="[...path, expandedKey]"
+                :path="[...props.path, expandedKey]"
                 :model-value="(props.modelValue as any)?.[expandedKey]"
                 @update:model-value="v => updateDynamicValue(expandedKey, v)"
               />
             </div>
+          </div>
+
+          <!-- Hidden form items for validation - render all complex properties for validation even when collapsed -->
+          <div class="hidden-validation-fields" style="display: none;">
+            <template v-for="row in dynamicRows.filter(r => r.complex)" :key="`validation-${row.key}`">
+              <template v-if="!expandedRows.includes(row.key) && apResolvedSchema">
+                <!-- Only render if not already expanded (to avoid duplicate form items) -->
+                <FieldRenderer
+                  :schema="apResolvedSchema"
+                  :path="[...props.path, row.key]"
+                  :model-value="(props.modelValue as any)?.[row.key]"
+                  @update:model-value="v => updateDynamicValue(row.key, v)"
+                />
+              </template>
+            </template>
           </div>
           </template>
         </div>
@@ -827,5 +1085,64 @@ function toggleRowExpansion(key: string) {
 /* Field-level validation styles */
 .error-badge {
   margin-left: 8px;
+}
+
+/* Additional Properties validation styles */
+.ap-validation-summary {
+  margin-bottom: 12px;
+}
+
+.validation-summary-details {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+.inline-errors {
+  margin-top: 8px;
+  max-width: 300px;
+}
+
+.inline-errors .el-alert {
+  margin-bottom: 4px;
+}
+
+.inline-errors .el-alert:last-child {
+  margin-bottom: 0;
+}
+
+/* Enhanced key display with validation */
+.key-display {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+  transition: background-color 0.2s;
+  position: relative;
+}
+
+.key-display:hover {
+  background-color: #f5f7fa;
+}
+
+.key-display .error-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Table row highlighting for errors */
+.dyn-table :deep(.el-table__row.has-error) {
+  background-color: #fef0f0;
+}
+
+/* Error state styling */
+.has-validation-error .key-display {
+  border-left: 3px solid var(--el-color-danger);
+  padding-left: 8px;
+}
+
+.has-validation-error .value-preview {
+  color: var(--el-color-danger);
 }
 </style>
