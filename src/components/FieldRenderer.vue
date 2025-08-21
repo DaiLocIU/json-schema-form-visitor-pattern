@@ -677,7 +677,7 @@ function toggleRowExpansion(key: string) {
                     :content="additionalPropsValidation[row.key].errors.join('; ')"
                     placement="top"
                   >
-                    <ElBadge :value="additionalPropsValidation[row.key].errors.length" type="danger" class="error-badge">
+                    <ElBadge type="danger" class="error-badge">
                       <ElIcon color="#f56c6c"><WarningFilled /></ElIcon>
                     </ElBadge>
                   </ElTooltip>
@@ -726,25 +726,6 @@ function toggleRowExpansion(key: string) {
                     {{ expandedRows.includes(row.key) ? 'Collapse' : 'Expand' }}
                   </ElButton>
                   <!-- Show validation errors for complex objects -->
-                  <div v-if="additionalPropsValidation[row.key]?.hasError" class="inline-errors">
-                    <ElAlert 
-                      v-for="(error, idx) in additionalPropsValidation[row.key].errors.slice(0, 2)" 
-                      :key="idx"
-                      :title="error" 
-                      type="error" 
-                      size="small" 
-                      :closable="false"
-                      show-icon
-                      style="margin-top: 4px;"
-                    />
-                    <ElText 
-                      v-if="additionalPropsValidation[row.key].errors.length > 2"
-                      size="small" 
-                      type="info"
-                    >
-                      ... and {{ additionalPropsValidation[row.key].errors.length - 2 }} more errors
-                    </ElText>
-                  </div>
                 </div>
               </template>
             </ElTableColumn>
