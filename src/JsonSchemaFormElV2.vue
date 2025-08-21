@@ -61,6 +61,27 @@ const formRules = computed(() => {
     
     const resolvedSchema = resolveSchema(schema)
     
+    // Handle composite schemas (anyOf, oneOf)
+    if (resolvedSchema.anyOf || resolvedSchema.oneOf) {
+      const branches = resolvedSchema.anyOf || resolvedSchema.oneOf
+      
+      // Find the active branch based on current data
+      let activeBranch = null
+      for (const branch of branches) {
+        const resolvedBranch = resolveSchema(branch)
+        if (matchesSchema(data, resolvedBranch)) {
+          activeBranch = resolvedBranch
+          break
+        }
+      }
+      
+      // If we found an active branch, use it for validation
+      if (activeBranch) {
+        generateRulesForPath(activeBranch, data, currentPath)
+        return
+      }
+    }
+    
     // Handle arrays
     if (resolvedSchema.type === 'array' && Array.isArray(data) && resolvedSchema.items) {
       data.forEach((item: any, index: number) => {
@@ -70,85 +91,154 @@ const formRules = computed(() => {
     }
     
     // Handle objects
-    if (resolvedSchema.type === 'object' && resolvedSchema.properties) {
-      Object.entries(resolvedSchema.properties).forEach(([key, propSchema]: [string, any]) => {
-        const fieldPath = currentPath ? `${currentPath}.${key}` : key
-        const resolvedPropSchema = resolveSchema(propSchema)
-        const fieldRules: any[] = []
-        
-        // Required validation
-        if (Array.isArray(resolvedSchema.required) && resolvedSchema.required.includes(key)) {
-          fieldRules.push({
-            required: true,
-            message: `${resolvedPropSchema.title || key} is required`,
-            trigger: ['blur', 'change']
-          })
-        }
-        
-        // Type validation
-        if (resolvedPropSchema.type) {
-          fieldRules.push({
-            validator: (rule: any, value: any, callback: Function) => {
-              // Skip validation for empty non-required fields
-              if ((value === undefined || value === null || value === '') && 
-                  !fieldRules.some(r => r.required)) {
-                callback()
-                return
+    if (resolvedSchema.type === 'object') {
+      // Handle defined properties
+      if (resolvedSchema.properties) {
+        Object.entries(resolvedSchema.properties).forEach(([key, propSchema]: [string, any]) => {
+          const fieldPath = currentPath ? `${currentPath}.${key}` : key
+          const resolvedPropSchema = resolveSchema(propSchema)
+          
+          // Handle composite schemas for properties
+          let actualPropSchema = resolvedPropSchema
+          if (resolvedPropSchema.anyOf || resolvedPropSchema.oneOf) {
+            const branches = resolvedPropSchema.anyOf || resolvedPropSchema.oneOf
+            const propertyData = data && typeof data === 'object' ? data[key] : undefined
+            
+            // Find the active branch for this property
+            for (const branch of branches) {
+              const resolvedBranch = resolveSchema(branch)
+              if (matchesSchema(propertyData, resolvedBranch)) {
+                actualPropSchema = resolvedBranch
+                break
               }
-              
-              const actualType = Array.isArray(value) ? 'array' : typeof value
-              
-              // String validation
-              if (resolvedPropSchema.type === 'string' && actualType !== 'string') {
-                callback(new Error(`Expected string, got ${actualType}`))
-                return
-              }
-              
-              // Number validation
-              if (resolvedPropSchema.type === 'number' && actualType !== 'number') {
-                callback(new Error(`Expected number, got ${actualType}`))
-                return
-              }
-              
-              // Integer validation
-              if (resolvedPropSchema.type === 'integer') {
-                if (actualType !== 'number' || !Number.isInteger(value)) {
-                  callback(new Error(`Expected integer, got ${actualType}`))
+            }
+          }
+          
+          const fieldRules: any[] = []
+          
+          // Required validation
+          if (Array.isArray(resolvedSchema.required) && resolvedSchema.required.includes(key)) {
+            fieldRules.push({
+              required: true,
+              message: `${actualPropSchema.title || key} is required`,
+              trigger: ['blur', 'change']
+            })
+          }
+          
+          // Type validation
+          if (actualPropSchema.type) {
+            fieldRules.push({
+              validator: (rule: any, value: any, callback: Function) => {
+                // Skip validation for empty non-required fields
+                if ((value === undefined || value === null || value === '') && 
+                    !fieldRules.some(r => r.required)) {
+                  callback()
                   return
                 }
-              }
-              
-              // Boolean validation
-              if (resolvedPropSchema.type === 'boolean' && actualType !== 'boolean') {
-                callback(new Error(`Expected boolean, got ${actualType}`))
-                return
-              }
-              
-              // Enum validation
-              if (Array.isArray(resolvedPropSchema.enum) && !resolvedPropSchema.enum.includes(value)) {
-                callback(new Error(`Value must be one of: ${resolvedPropSchema.enum.join(', ')}`))
-                return
-              }
-              
-              callback()
-            },
-            trigger: ['blur', 'change']
-          })
-        }
-        
-        if (fieldRules.length > 0) {
-          rules[fieldPath] = fieldRules
-        }
-        
-        // Recursively handle nested data
-        if (data && typeof data === 'object' && data[key] !== undefined) {
-          generateRulesForPath(resolvedPropSchema, data[key], fieldPath)
-        }
-      })
+                
+                const actualType = Array.isArray(value) ? 'array' : typeof value
+                
+                // String validation
+                if (actualPropSchema.type === 'string' && actualType !== 'string') {
+                  callback(new Error(`Expected string, got ${actualType}`))
+                  return
+                }
+                
+                // Number validation
+                if (actualPropSchema.type === 'number' && actualType !== 'number') {
+                  callback(new Error(`Expected number, got ${actualType}`))
+                  return
+                }
+                
+                // Integer validation
+                if (actualPropSchema.type === 'integer') {
+                  if (actualType !== 'number' || !Number.isInteger(value)) {
+                    callback(new Error(`Expected integer, got ${actualType}`))
+                    return
+                  }
+                }
+                
+                // Boolean validation
+                if (actualPropSchema.type === 'boolean' && actualType !== 'boolean') {
+                  callback(new Error(`Expected boolean, got ${actualType}`))
+                  return
+                }
+                
+                // Enum validation
+                if (Array.isArray(actualPropSchema.enum) && !actualPropSchema.enum.includes(value)) {
+                  callback(new Error(`Value must be one of: ${actualPropSchema.enum.join(', ')}`))
+                  return
+                }
+                
+                callback()
+              },
+              trigger: ['blur', 'change']
+            })
+          }
+          
+          if (fieldRules.length > 0) {
+            rules[fieldPath] = fieldRules
+          }
+          
+          // Recursively handle nested data using the resolved property schema
+          if (data && typeof data === 'object' && data[key] !== undefined) {
+            generateRulesForPath(actualPropSchema, data[key], fieldPath)
+          }
+        })
+      }
+      
+      // Handle additionalProperties - for dynamic keys like "123456" in your case
+      if (resolvedSchema.additionalProperties && data && typeof data === 'object') {
+        Object.entries(data).forEach(([key, value]: [string, any]) => {
+          // Skip properties that are already handled by defined properties
+          if (resolvedSchema.properties && key in resolvedSchema.properties) {
+            return
+          }
+          
+          const fieldPath = currentPath ? `${currentPath}.${key}` : key
+          const additionalPropSchema = resolveSchema(resolvedSchema.additionalProperties)
+          
+          // Generate rules for the additional property value
+          generateRulesForPath(additionalPropSchema, value, fieldPath)
+        })
+      }
     }
   }
   
+  // Helper function to check if data matches a schema
+  function matchesSchema(data: any, schema: any): boolean {
+    if (!schema || typeof schema !== 'object') return false
+    
+    // Null type check
+    if (schema.type === 'null') {
+      return data === null || data === undefined
+    }
+    
+    // Type checks
+    if (schema.type) {
+      const actualType = data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data
+      
+      if (Array.isArray(schema.type)) {
+        if (!schema.type.includes(actualType)) return false
+      } else {
+        if (schema.type !== actualType) return false
+      }
+    }
+    
+    // Object with additionalProperties check
+    if (schema.type === 'object' && schema.additionalProperties && typeof data === 'object' && data !== null) {
+      return true
+    }
+    
+    return true
+  }
+  
   generateRulesForPath(props.schema, state.value)
+  
+  // Debug: log the generated rules to understand what's happening
+  console.log('Generated validation rules:', rules)
+  console.log('Current form data:', state.value)
+  
   return rules
 })
 
