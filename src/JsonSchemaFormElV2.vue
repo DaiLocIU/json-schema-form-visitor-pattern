@@ -1,11 +1,11 @@
 <template>
-  <el-form label-position="top" class="jsf-form">
+  <el-form ref="formRef" :model="state.value" :rules="formRules" label-position="top" class="jsf-form">
     <FieldRenderer :schema="props.schema" :model-value="state.value" @update:model-value="v => state.value = v" />
   </el-form>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch, onMounted, provide, h } from 'vue'
+import { computed, reactive, watch, onMounted, provide, h, ref } from 'vue'
 import FieldRenderer from './components/FieldRenderer.vue'
 import CompositeRenderer from './components/CompositeRenderer.vue'
 import {
@@ -50,6 +50,108 @@ const emit = defineEmits<{
  *  State
  * ========================= */
 const state = reactive<{ value: any }>({ value: props.modelValue });
+const formRef = ref()
+
+// Dynamic validation rules that update based on current form data
+const formRules = computed(() => {
+  const rules: Record<string, any[]> = {}
+  
+  function generateRulesForPath(schema: any, data: any, currentPath: string = '') {
+    if (!schema || typeof schema !== 'object') return
+    
+    const resolvedSchema = resolveSchema(schema)
+    
+    // Handle arrays
+    if (resolvedSchema.type === 'array' && Array.isArray(data) && resolvedSchema.items) {
+      data.forEach((item: any, index: number) => {
+        const itemPath = currentPath ? `${currentPath}.${index}` : String(index)
+        generateRulesForPath(resolvedSchema.items, item, itemPath)
+      })
+    }
+    
+    // Handle objects
+    if (resolvedSchema.type === 'object' && resolvedSchema.properties) {
+      Object.entries(resolvedSchema.properties).forEach(([key, propSchema]: [string, any]) => {
+        const fieldPath = currentPath ? `${currentPath}.${key}` : key
+        const resolvedPropSchema = resolveSchema(propSchema)
+        const fieldRules: any[] = []
+        
+        // Required validation
+        if (Array.isArray(resolvedSchema.required) && resolvedSchema.required.includes(key)) {
+          fieldRules.push({
+            required: true,
+            message: `${resolvedPropSchema.title || key} is required`,
+            trigger: ['blur', 'change']
+          })
+        }
+        
+        // Type validation
+        if (resolvedPropSchema.type) {
+          fieldRules.push({
+            validator: (rule: any, value: any, callback: Function) => {
+              // Skip validation for empty non-required fields
+              if ((value === undefined || value === null || value === '') && 
+                  !fieldRules.some(r => r.required)) {
+                callback()
+                return
+              }
+              
+              const actualType = Array.isArray(value) ? 'array' : typeof value
+              
+              // String validation
+              if (resolvedPropSchema.type === 'string' && actualType !== 'string') {
+                callback(new Error(`Expected string, got ${actualType}`))
+                return
+              }
+              
+              // Number validation
+              if (resolvedPropSchema.type === 'number' && actualType !== 'number') {
+                callback(new Error(`Expected number, got ${actualType}`))
+                return
+              }
+              
+              // Integer validation
+              if (resolvedPropSchema.type === 'integer') {
+                if (actualType !== 'number' || !Number.isInteger(value)) {
+                  callback(new Error(`Expected integer, got ${actualType}`))
+                  return
+                }
+              }
+              
+              // Boolean validation
+              if (resolvedPropSchema.type === 'boolean' && actualType !== 'boolean') {
+                callback(new Error(`Expected boolean, got ${actualType}`))
+                return
+              }
+              
+              // Enum validation
+              if (Array.isArray(resolvedPropSchema.enum) && !resolvedPropSchema.enum.includes(value)) {
+                callback(new Error(`Value must be one of: ${resolvedPropSchema.enum.join(', ')}`))
+                return
+              }
+              
+              callback()
+            },
+            trigger: ['blur', 'change']
+          })
+        }
+        
+        if (fieldRules.length > 0) {
+          rules[fieldPath] = fieldRules
+        }
+        
+        // Recursively handle nested data
+        if (data && typeof data === 'object' && data[key] !== undefined) {
+          generateRulesForPath(resolvedPropSchema, data[key], fieldPath)
+        }
+      })
+    }
+  }
+  
+  generateRulesForPath(props.schema, state.value)
+  return rules
+})
+
 watch(
   () => props.modelValue,
   (v) => {
@@ -65,19 +167,20 @@ watch(
   }
 );
 
-/* Nếu muốn có default cho root, làm sau mount (không làm trong render) */
+/* If we want to have default for root, do after mount (not during render) */
 onMounted(() => {
   if (state.value === undefined) {
-    state.value = initBySchema(resolveSchema(props.schema));
+    const init = initBySchema(resolveSchema(props.schema));
+    if (init !== null) state.value = init;
   }
 });
 
 /* =========================
- *  $ref / allOf resolver
+ *  Schema utilities
  * ========================= */
-const rootForRef = computed<JSONSchema>(() => props.rootSchema ?? props.schema);
+const rootForRef = computed(() => props.rootSchema ?? props.schema);
 
-function getByPointer(root: any, pointer: string) {
+function getByPointer(root: any, pointer: string): any {
   if (!pointer?.startsWith("#/")) return undefined;
   return pointer
     .slice(2)
@@ -107,26 +210,27 @@ function resolveSchema(def: any, seen = new Set<any>()): any {
   if ("$ref" in def) {
     const tgt = getByPointer(rootForRef.value, def.$ref);
     const resolved = resolveSchema(tgt, seen);
+    // merge local overrides (Draft 2020-12 semantics)
     const { $ref, ...overrides } = def;
-    return deepMerge(resolved, resolveSchema(overrides, seen));
+    return Object.keys(overrides).length > 0
+      ? deepMerge(resolved, overrides)
+      : resolved;
   }
+
+  const out: any = { ...def };
 
   // allOf
   if (Array.isArray(def.allOf)) {
-    const merged = def.allOf
-      .map((d) => resolveSchema(d, seen))
-      .reduce((acc, cur) => deepMerge(acc, cur), {});
-    const rest = { ...def };
-    delete (rest as any).allOf;
-    return resolveSchema(deepMerge(merged, rest), seen);
+    const resolved = def.allOf.map((d: any) => resolveSchema(d, seen));
+    const merged = resolved.reduce((acc: any, curr: any) => deepMerge(acc, curr), {});
+    return deepMerge(merged, out);
   }
 
-  // anyOf/oneOf: chỉ resolve bên trong
-  const out: any = { ...def };
-  if (Array.isArray(def.anyOf))
-    out.anyOf = def.anyOf.map((d) => resolveSchema(d, seen));
-  if (Array.isArray(def.oneOf))
-    out.oneOf = def.oneOf.map((d) => resolveSchema(d, seen));
+  // oneOf/anyOf (keep as-is, resolved individually)
+  if (def.oneOf)
+    out.oneOf = def.oneOf.map((d: any) => resolveSchema(d, seen));
+  if (def.anyOf)
+    out.anyOf = def.anyOf.map((d: any) => resolveSchema(d, seen));
 
   // children
   if (def.items) out.items = resolveSchema(def.items, seen);
@@ -154,78 +258,36 @@ function ensureObjectPath(obj: any, path: (string | number)[]) {
   let cur = obj;
   for (let i = 0; i < path.length - 1; i++) {
     const k = path[i];
-    if (cur[k] == null) cur[k] = typeof path[i + 1] === "number" ? [] : {};
+    if (!(k in cur)) {
+      const next = path[i + 1];
+      cur[k] = typeof next === "number" ? [] : {};
+    }
     cur = cur[k];
   }
-  return { parent: cur, key: path[path.length - 1] };
+  return cur;
 }
+
 function getAt(obj: any, path: (string | number)[]) {
-  return path.reduce((acc, k) => (acc == null ? acc : acc[k]), obj);
-}
-function setAt(obj: any, path: (string | number)[], value: any) {
-  const { parent, key } = ensureObjectPath(obj, path);
-  parent[key as any] = value;
-}
-
-/* =========================
- *  UI helpers (badge & hint)
- * ========================= */
-function typeBadgeOf(sch: any) {
-  const t =
-    sch?.type ??
-    (Array.isArray(sch?.enum)
-      ? "string"
-      : sch?.oneOf
-      ? "oneOf"
-      : sch?.anyOf
-      ? "anyOf"
-      : "");
-  return t
-    ? h(
-        ElTag,
-        {
-          size: "small",
-          type: "success",
-          effect: "light",
-          round: true,
-          class: "lbl-tag",
-        },
-        () => t
-      )
-    : null;
-}
-function labelWithType(text: string, sch: any) {
-  return h("div", { class: "lbl-row" }, [
-    h("span", { class: "lbl-text" }, text),
-    typeBadgeOf(sch),
-  ]);
-}
-function helperText(sch: any) {
-  const help = sch?.description;
-  return help ? h("div", { class: "hint" }, help) : null;
+  let cur = obj;
+  for (const k of path) {
+    if (!cur || !(k in cur)) return undefined;
+    cur = cur[k];
+  }
+  return cur;
 }
 
-/* =========================
- *  Visitor render (Element Plus)
- * ========================= */
-// branch selection state for composite schemas
-const branchState = reactive<Record<string, number | undefined>>({})
-function keyOf(path: (string | number)[]) { return path.map(String).join('/') }
-
-function getOptionLabel(schema: any, index: number): string {
-  if (schema.title) return schema.title;
-  if (schema.type) return schema.type;
-  if (Array.isArray(schema.enum)) return `enum: ${schema.enum.join(", ")}`;
-  if (schema.$ref)
-    return String(schema.$ref)
-      .replace("#/$defs/", "")
-      .replace("#/definitions/", "");
-  return `Option ${index + 1}`;
+function setAt(obj: any, path: (string | number)[], val: any) {
+  if (path.length === 0) return;
+  const parent = ensureObjectPath(obj, path);
+  const lastKey = path[path.length - 1];
+  if (val === undefined) {
+    delete parent[lastKey];
+  } else {
+    parent[lastKey] = val;
+  }
 }
 
-// (Template-driven rendering moved into FieldRenderer / CompositeRenderer)
-
-function initBySchema(s: any) {
+function initBySchema(s: any): any {
   if (!s || typeof s !== "object") return null;
   if (s.default !== undefined) return s.default;
   switch (s.type) {
@@ -240,26 +302,19 @@ function initBySchema(s: any) {
       return 0;
     case "string":
       return "";
-    case "null":
-      return null;
     default:
       return null;
   }
 }
 
 /* =========================
- *  oneOf / anyOf (dropdown lazy, NO model write)
+ *  Branch selection state for composite schemas
  * ========================= */
-// Composite rendering handled in template components
+const branchState = reactive<Record<string, number | undefined>>({});
+function keyOf(path: (string | number)[]) {
+  return path.map(String).join("/");
+}
 
-/* =========================
- *  Render node đệ quy
- * ========================= */
-// Node rendering moved to FieldRenderer (template-based)
-
-/* =========================
- *  Root vnode + wrapper
- * ========================= */
 // Provide helpers for injected child components
 provide('jsf', {
   resolveSchema,
@@ -268,7 +323,9 @@ provide('jsf', {
   state,
   getAt,
   setAt,
-  keyOf
+  keyOf,
+  formRef,
+  validateForm: () => formRef.value?.validate()
 })
 </script>
 
@@ -312,47 +369,28 @@ provide('jsf', {
   font-weight: 700;
 }
 .lbl-tag {
-  font-size: 12px;
-  padding: 0 6px;
-  text-transform: lowercase;
-}
-
-.inp :deep(.el-input__wrapper),
-.inp :deep(.el-select__wrapper),
-.inp :deep(.el-input-number),
-.inp :deep(.el-date-editor) {
-  border-radius: 10px;
+  border-radius: 6px;
+  font-size: 10px;
+  padding: 2px 4px;
 }
 
 .hint {
-  color: #7a7a7a;
+  color: #909399;
   font-size: 12px;
-  margin-top: 6px;
+  margin-top: 4px;
+}
+.inp {
+  width: 100%;
 }
 
-.switch-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-.switch-text {
-  color: #333;
-}
-
-.ap-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-}
-.ap-formitem {
-  flex: 1;
-}
-
-.card-item :deep(.el-card__body),
-.card-composite :deep(.el-card__body) {
+.oneof, .anyof {
+  background: #f5f7fa;
+  border: 1px dashed #dcdfe6;
   padding: 12px;
+  margin: 8px 0;
 }
-.el-form-item:last-child {
-  margin-bottom: 0;
+
+.branch-selector {
+  margin-bottom: 12px;
 }
 </style>

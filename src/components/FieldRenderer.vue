@@ -27,7 +27,10 @@ import {
   ElTooltip,
   ElIcon,
   ElDialog,
+  ElMessage,
+  ElAlert
 } from 'element-plus'
+import { WarningFilled, Delete, Edit, ArrowUp, ArrowDown, Check, Close } from '@element-plus/icons-vue';
 
 defineOptions({ name: 'FieldRenderer' })
 
@@ -48,6 +51,9 @@ const dynamicCollapsed = ref([])
 const editingKey = ref<string | null>(null)
 const editKeyValue = ref('')
 const expandedRows = ref<string[]>([])
+
+// Get the form validation function from jsf
+const validateAllForm = computed(() => jsf.validateForm)
 
 // Auto-collapse when there are more than 3 dynamic properties
 const shouldAutoCollapse = computed(() => dynamicKeys.value.length > 3)
@@ -238,6 +244,26 @@ function toggleRowExpansion(key: string) {
 </script>
 
 <template>
+  <!-- Validation Controls (only show at root level) -->
+  <div v-if="path.length === 0" class="validation-section">
+    <ElCard shadow="hover" class="validation-card">
+      <template #header>
+        <div class="validation-header">
+          <h4>Schema Validation</h4>
+          <div class="validation-controls">
+            <ElButton
+              type="primary"
+              @click="validateAllForm"
+            >
+              <ElIcon><Check /></ElIcon>
+              Validate All
+            </ElButton>
+          </div>
+        </div>
+      </template>
+    </ElCard>
+  </div>
+
   <!-- Composite (oneOf/anyOf) -->
   <CompositeRenderer
     v-if="schResolved.oneOf || schResolved.anyOf"
@@ -248,7 +274,10 @@ function toggleRowExpansion(key: string) {
   />
 
   <!-- string / enum -->
-  <ElFormItem v-else-if="schResolved.type === 'string' || Array.isArray(schResolved.enum)">
+  <ElFormItem 
+    v-else-if="schResolved.type === 'string' || Array.isArray(schResolved.enum)"
+    :prop="path.join('.')"
+  >
     <template #label>
       <div class="lbl-row">
         <span class="lbl-text">{{ schResolved.title ?? (path[path.length-1] ?? 'string') }}</span>
@@ -294,7 +323,10 @@ function toggleRowExpansion(key: string) {
   </ElFormItem>
 
   <!-- number / integer -->
-  <ElFormItem v-else-if="schResolved.type === 'number' || schResolved.type === 'integer'">
+  <ElFormItem 
+    v-else-if="schResolved.type === 'number' || schResolved.type === 'integer'"
+    :prop="path.join('.')"
+  >
     <template #label>
       <div class="lbl-row">
         <span class="lbl-text">{{ schResolved.title ?? (path[path.length-1] ?? schResolved.type) }}</span>
@@ -313,7 +345,10 @@ function toggleRowExpansion(key: string) {
   </ElFormItem>
 
   <!-- boolean -->
-  <ElFormItem v-else-if="schResolved.type === 'boolean'">
+  <ElFormItem 
+    v-else-if="schResolved.type === 'boolean'"
+    :prop="path.join('.')"
+  >
     <template #label>
       <div class="lbl-row">
         <span class="lbl-text">{{ schResolved.title ?? (path[path.length-1] ?? 'boolean') }}</span>
@@ -494,7 +529,6 @@ function toggleRowExpansion(key: string) {
                 size="small" 
                 @click="toggleRowExpansion(expandedKey)"
               >
-                <ElIcon><ArrowUp /></ElIcon>
                 Collapse
               </ElButton>
             </div>
@@ -534,7 +568,10 @@ function toggleRowExpansion(key: string) {
   </div>
 
   <!-- null / unknown -->
-  <ElFormItem v-else>
+  <ElFormItem 
+    v-else
+    :prop="path.join('.')"
+  >
     <template #label>
       <div class="lbl-row">
         <span class="lbl-text">{{ schResolved.title ?? (path[path.length-1] ?? 'value') }}</span>
@@ -620,7 +657,6 @@ function toggleRowExpansion(key: string) {
 }
 .props-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 16px 24px;
 }
 .prop-item {
@@ -719,5 +755,77 @@ function toggleRowExpansion(key: string) {
 .edit-dialog.is-fullscreen .props-grid {
   grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
   gap: 24px 40px;
+}
+
+/* Validation Styles */
+.validation-section {
+  margin-bottom: 24px;
+}
+
+.validation-card {
+  border: 1px solid var(--el-border-color);
+}
+
+.validation-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.validation-header h4 {
+  margin: 0;
+  color: var(--el-text-color-primary);
+}
+
+.validation-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.validation-results {
+  margin-top: 16px;
+}
+
+.validation-summary {
+  margin-bottom: 12px;
+}
+
+.error-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 4px;
+  padding: 8px;
+  background-color: var(--el-fill-color-lighter);
+}
+
+.error-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+  font-size: 13px;
+}
+
+.error-item:last-child {
+  border-bottom: none;
+}
+
+.error-path {
+  font-weight: 500;
+  color: var(--el-color-primary);
+  min-width: 120px;
+  font-family: monospace;
+}
+
+.error-message {
+  color: var(--el-text-color-regular);
+  flex: 1;
+}
+
+/* Field-level validation styles */
+.error-badge {
+  margin-left: 8px;
 }
 </style>
