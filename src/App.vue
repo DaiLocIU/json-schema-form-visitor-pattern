@@ -25,6 +25,13 @@ import { RouterLink, RouterView } from 'vue-router'
             >
               Dynamic Input Test
             </RouterLink>
+            <RouterLink 
+              to="/responsive-hover-button-test" 
+              style="color: #ecf0f1; text-decoration: none; padding: 0.5rem 1rem; border-radius: 4px; transition: background-color 0.3s;"
+              active-class="active-link"
+            >
+              Hover Button Test
+            </RouterLink>
           </div>
         </div>
       </div>

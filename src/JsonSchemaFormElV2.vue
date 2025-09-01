@@ -7,21 +7,9 @@
 <script setup lang="ts">
 import { computed, reactive, watch, onMounted, provide, h, ref } from 'vue'
 import FieldRenderer from './components/FieldRenderer.vue'
-import CompositeRenderer from './components/CompositeRenderer.vue'
 import {
   ElForm,
-  ElFormItem,
-  ElInput,
-  ElInputNumber,
-  ElSelect,
-  ElOption,
-  ElSwitch,
-  ElButton,
-  ElCard,
-  ElDivider,
-  ElText,
-  ElDatePicker,
-  ElTag,
+
 } from "element-plus";
 
 type JSONSchema = Record<string, any>;
